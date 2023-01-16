@@ -26,10 +26,10 @@ def handle_message(message):
         user_input = float(user_input)
         if user_input > 35:
             mg_dl = user_input
-            mmol_l = round(mg_dl / 18, 2)
+            mmol_l = round(mg_dl / 18, 1)
         elif user_input <= 35:
             mmol_l = user_input
-            mg_dl = round(mmol_l * 18, 2)
+            mg_dl = round(mmol_l * 18, 0)
         conn = sqlite3.connect('user_inputs.db')
         c = conn.cursor()
         c.execute("INSERT INTO user_inputs (timestamp, user_id, mg_dl,mmol_l) VALUES (?,?,?,?)",
@@ -39,6 +39,7 @@ def handle_message(message):
         conn.close()
         bot.send_message(chat_id,
                          f'Your input of {user_input} has been saved, which is {mg_dl} mg/dl or {mmol_l} mmol/L')
+        logger.info(f'User {user_id} sent {mg_dl} mg/dl ({mmol_l} mmol/L)')
         send_last_week_a1c(user_id, chat_id)
     elif user_input == "history last day":
         send_last_day_entries(user_id, chat_id)
@@ -62,7 +63,7 @@ def send_last_day_entries(user_id, chat_id):
             timestamp = datetime.datetime.fromisoformat(row[0]).strftime("%d.%m %H:%M")
             entry = f'{timestamp} - {row[2]} mg/dl or {row[3]} mmol/L'
             entries.append(entry)
-        bot.send_message(chat_id, '\n'.join(reversed(entries)))
+        bot.send_message(chat_id, '\n'.join(entries))
     c.close()
     conn.close()
 

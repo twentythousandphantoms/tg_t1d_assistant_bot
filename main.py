@@ -1,8 +1,8 @@
-import telebot
-import sqlite3
 import datetime
 import logging
 
+import sqlite3
+import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import TOKEN
@@ -26,8 +26,8 @@ buttons = {
 }
 
 history_options = {
-    '1_day': {'label': '1 day', 'callback_data': '1_day'},
-    '2_days': {'label': '2 days', 'callback_data': '2_days'},
+    '1 day': {'label': '1 day', 'callback_data': '1 day'},
+    '2 days': {'label': '2 days', 'callback_data': '2 days'},
     'week': {'label': 'week', 'callback_data': 'week'},
     'month': {'label': 'month', 'callback_data': 'month'},
     'all': {'label': 'all', 'callback_data': 'all'}
@@ -87,35 +87,56 @@ def handle_message(message):
                          reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-def send_history_data(user_id: int, chat_id: int, period: str):
-    time_range = datetime.datetime.now() - datetime.timedelta(hours=12)
-    if period == '1_day':
-        time_range = datetime.datetime.now() - datetime.timedelta(days=1)
-    elif period == '2_days':
-        time_range = datetime.datetime.now() - datetime.timedelta(days=2)
-    elif period == 'week':
-        time_range = datetime.datetime.now() - datetime.timedelta(weeks=1)
-    elif period == 'month':
-        time_range = datetime.datetime.now() - datetime.timedelta(days=30)
-    elif period == 'all':
-        time_range = datetime.datetime(1970, 1, 1)
+def send_history_data(user_id: int, chat_id: int, time_period: str):
+    """
+        It is used to send the data of the user's glucose level entries for the specified time period.
+        This function takes user_id, time_period and bot as the input parameter.
 
+        The function first creates a connection to the sqlite3 database and retrieves the data from the 'user_inputs'
+        table based on the user_id and time_period passed as the parameter. It then loops through the data,
+        formats the timestamp and message, then sends the message to the user via the bot. Finally, it closes the
+        connection to the database.
+    """
     conn = sqlite3.connect('user_inputs.db')
     c = conn.cursor()
-    c.execute("SELECT * FROM user_inputs WHERE timestamp > ? and user_id = ? ORDER BY timestamp DESC", (
-        time_range, user_id))
-    entries = c.fetchall()
-    if len(entries) == 0:
-        bot.send_message(chat_id, 'No entries for the last {}\n'.format(period))
+    logger.info(f'Chat ID: {chat_id}: User {user_id} requested a history data for period: {time_period}')
+    if time_period == "1 day":
+        date_range = (datetime.datetime.now() - datetime.timedelta(days=1), datetime.datetime.now())
+    elif time_period == "2 days":
+        date_range = (datetime.datetime.now() - datetime.timedelta(days=2), datetime.datetime.now())
+    elif time_period == "week":
+        date_range = (datetime.datetime.now() - datetime.timedelta(weeks=1), datetime.datetime.now())
+    elif time_period == "month":
+        date_range = (datetime.datetime.now() - datetime.timedelta(days=30), datetime.datetime.now())
+    elif time_period == "all":
+        c.execute("SELECT * FROM user_inputs WHERE user_id=? ORDER BY timestamp DESC", (user_id,))
     else:
-        message = "Entries for the last {}:\n".format(period)
-        for entry in entries:
-            timestamp = entry[0].strftime("%d.%m %H:%M")
-            user_id = entry[1]
-            mg_dl = entry[2]
-            mmol_l = round(mg_dl / 18.0182, 1)
-            message += f"{timestamp} - {mg_dl} mg/dL ({mmol_l} mmol/L)\n"
+        message = "Invalid time period"
         bot.send_message(chat_id, message)
+        logger.info(f'Sent: {message}')
+        return
+    if time_period != "all":
+        c.execute("SELECT * FROM user_inputs WHERE user_id=? AND timestamp BETWEEN ? AND ? ORDER BY timestamp DESC",
+                  (user_id, date_range[0], date_range[1]))
+    rows = c.fetchall()
+    if len(rows) == 0:
+        message = "No entries for the {}".format(time_period)
+        bot.send_message(chat_id, message)
+        logger.info(f'Sent: {message}')
+        return
+    message = "Entries for the {}:\n".format(time_period)
+    for row in rows:
+        try:
+            timestamp = datetime.datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S.%f')
+        except:
+            timestamp = datetime.datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
+        timestamp = timestamp.strftime("%d.%m %H:%M")
+        mg_dl = row[2]
+        mmol_l = row[3]
+        message += "{} - {} mg/dl ({} mmol/l)\n".format(timestamp, mg_dl, round(mmol_l, 2))
+    bot.send_message(chat_id, message)
+    logger.info(f'Sent: {message}')
+    conn.close()
 
 
 def a1c_calculation(mg_dl):

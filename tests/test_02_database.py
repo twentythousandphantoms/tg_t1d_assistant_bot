@@ -26,7 +26,7 @@ def test_insert_data():
     c = conn.cursor()
     c.execute("SELECT * FROM user_inputs")
     data = c.fetchall()
-    assert (1, '2022-01-01 10:00:00', 100, 5.6) in data
+    assert ('2022-01-01 10:00:00', 1, 100.0, 5.6) in data
     conn.close()
 
 
@@ -36,6 +36,16 @@ def test_select_all_data():
     insert_data(1, 100, 5.6, '2022-01-01 10:00:00')
     insert_data(2, 110, 6.1, '2022-01-01 11:00:00')
     data = select_all_data()
-    assert (1, '2022-01-01 10:00:00', 100, 5.6) in data
-    assert (2, '2022-01-01 11:00:00', 110, 6.1) in data
+    assert ('2022-01-01 10:00:00', 1, 100, 5.6) in data
+    assert ('2022-01-01 11:00:00', 2, 110, 6.1) in data
+    conn.close()
+
+
+def test_delete_data():
+    conn = create_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM user_inputs WHERE user_id in (1,2)")
+    conn.commit()
+    data = select_all_data()
+    assert ('2022-01-01 10:00:00', 1, 100.0, 5.6) not in data
     conn.close()

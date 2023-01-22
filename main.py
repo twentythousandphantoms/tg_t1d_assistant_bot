@@ -14,11 +14,6 @@ logger = logging.getLogger(__name__)
 # connect to telegram bot using API key
 bot = telebot.TeleBot(TOKEN)
 
-
-def mg_dl_to_mmol_l(mg_dl):
-    return round(mg_dl / 18.0182, 2)
-
-
 # button labels and callback data
 buttons = {
     'entry_glucose_level': {'label': '🩸', 'callback_data': 'entry_glucose_level'},
@@ -39,6 +34,10 @@ keyboard = [
 history_keyboard = [
     [InlineKeyboardButton(history_options[key]['label'], callback_data=history_options[key]['callback_data']) for key in
      history_options]]
+
+
+def mg_dl_to_mmol_l(mg_dl):
+    return round(mg_dl / 18.0182, 2)
 
 
 def handle_start_command(chat_id):
@@ -72,7 +71,7 @@ def insert_glucose_level(user_id: int, glucose_level: str):
     insert_data(user_id, mg_dl, round(mmol_l, 2))
 
 
-def send_history_data(user_id: int, chat_id: int, time_period: str):
+def send_history_data(user_id: int, chat_id: int, time_period='month'):
     """
         It is used to send the data of the user's glucose level entries for the specified time period.
         This function takes user_id, time_period and bot as the input parameter.
@@ -91,6 +90,8 @@ def send_history_data(user_id: int, chat_id: int, time_period: str):
         date_range = (datetime.datetime.now() - datetime.timedelta(weeks=1), datetime.datetime.now())
     elif time_period == "month":
         date_range = (datetime.datetime.now() - datetime.timedelta(days=30), datetime.datetime.now())
+    elif time_period.isnumeric():
+        date_range = (datetime.datetime.now() - datetime.timedelta(days=int(time_period)), datetime.datetime.now())
     elif time_period == "all":
         rows = select_all_data(user_id)
     else:
@@ -106,7 +107,7 @@ def send_history_data(user_id: int, chat_id: int, time_period: str):
         bot.send_message(chat_id, message)
         logger.info(f'Sent: {message}')
         return
-    message = "Entries for the {}:\n".format(time_period)
+    message = "Entries for the last {}:\n".format(time_period)
     for row in rows:
         try:
             timestamp = datetime.datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S.%f')
@@ -127,27 +128,44 @@ def a1c_calculation(mg_dl):
     return a1c
 
 
-def handle_last_week_a1c(user_id: int, chat_id: int):
-    """
-    It is used to send the A1C data of the user for the last week. This function takes user_id and bot as the input
-    parameter. The function first calls the select_history_data function to retrieve the data from the 'user_inputs'
-    table based on the user_id and last week date range. Then it calculates the A1C using the data. Finally,
-    it sends the A1C data to the user via the bot.
-    """
-    date_from = (datetime.datetime.now() - datetime.timedelta(weeks=1)).strftime("%Y-%m-%d")
-    date_to = datetime.datetime.now().strftime("%Y-%m-%d")
-    data = select_history_data(user_id, date_from, date_to)
+def get_ag(user_id: int, time_period):
+    if time_period.isnumeric():
+        date_from = (datetime.datetime.now() - datetime.timedelta(days=time_period)).strftime("%Y-%m-%d")
+        date_to = datetime.datetime.now().strftime("%Y-%m-%d")
+        data = select_history_data(user_id, date_from, date_to)
+    else:
+        data = select_all_data(user_id)
+
     if len(data) == 0:
-        message = "No entries for the last week"
-        bot.send_message(chat_id, message)
-        return
+        return None
     total_mg_dl = 0
     total_days = 0
     for row in data:
         total_mg_dl += row[2]
         total_days += 1
-    a1c = (total_mg_dl / total_days + 46.7) / 28.7
-    message = "Your A1C for the last week is {}%".format(round(a1c, 2))
+    ag = total_mg_dl / total_days
+    return ag
+
+
+def send_ag(user_id: int, chat_id: int, time_period='60'):
+    ag = get_ag(user_id, time_period)
+    if ag is None:
+        message = f'No entries for the last {time_period} days'
+        bot.send_message(chat_id, message)
+        return
+    else:
+        message = f'Your calculated average glucose for the last {time_period} days is {ag} \n'
+        bot.send_message(chat_id, message)
+    return
+
+
+def handle_last_a1c(user_id: int, chat_id: int, time_period=60):
+    ag = get_ag(user_id, time_period=time_period)
+    a1c = (ag + 46.7) / 28.7
+    message = "Your calculated A1C for the last {} days is {}% \n".format(round(a1c, 2), time_period)
+    message += "Please note that it is not a real A1C. " \
+               "Please consider taking a real " \
+               "[A1C blood test](https://www.healthline.com/health/type-2-diabetes/a1c-test)."
     bot.send_message(chat_id, message)
     return
 
@@ -175,15 +193,16 @@ def handle_message(message):
 
     if user_input.isnumeric():
         insert_glucose_level(user_id, user_input)
-        handle_last_week_a1c(chat_id, user_id)
+        send_ag(chat_id, user_id)
     elif user_input == "/start":
         handle_start_command(chat_id)
     elif user_input == "/help":
         handle_help_command(chat_id)
     elif user_input == "/a1c":
-        handle_last_week_a1c(chat_id, user_id)
+        handle_last_a1c(chat_id, user_id)
     else:
         handle_invalid_input(chat_id)
 
 
-bot.polling()
+if __name__ == "__main__":
+    bot.polling()

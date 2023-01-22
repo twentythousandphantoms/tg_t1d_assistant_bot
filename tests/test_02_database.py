@@ -1,5 +1,5 @@
 import pytest
-from database import create_connection, create_table, insert_data, select_all_data
+from tg_t1d_assistant_bot.database import create_connection, create_table, insert_data, select_all_data
 
 
 def test_create_connection():

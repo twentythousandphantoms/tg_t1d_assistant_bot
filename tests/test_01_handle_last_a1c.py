@@ -1,4 +1,4 @@
-import main
+from tg_t1d_assistant_bot.main import insert_data, mg_dl_to_mmol_l, handle_last_a1c
 import datetime
 import pytest
 
@@ -13,14 +13,14 @@ def test_handle_last_a1c(mocker):
 
     # Insert test data into the database
     for level in glucose_levels:
-        main.insert_data(user_id=user_id, mg_dl=level, mmol_l=main.mg_dl_to_mmol_l(level), timestamp=timestamp)
+        insert_data(user_id=user_id, mg_dl=level, mmol_l=mg_dl_to_mmol_l(level), timestamp=timestamp)
         timestamp += datetime.timedelta(hours=1)
 
     # Mock the send_message function to check the message sent
-    mock_bot = mocker.patch('main.bot')
+    mock_bot = mocker.patch('tg_t1d_assistant_bot.main.bot')
 
     # Call the handle_last_week_a1c function
-    main.handle_last_a1c(user_id, chat_id)
+    handle_last_a1c(user_id, chat_id)
 
     # Assert that the bot sent the message with the correct A1C
     message = f'Your calculated A1C for the last 60 days is {expected_a1c}% \n'

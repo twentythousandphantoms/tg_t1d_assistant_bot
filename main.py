@@ -65,10 +65,15 @@ def handle_invalid_input(chat_id):
 
 
 def insert_glucose_level(user_id: int, glucose_level: str):
-    mg_dl = float(glucose_level)
-    mmol_l = mg_dl / 18
+    if int(glucose_level) > 35:
+        mg_dl = float(glucose_level)
+        mmol_l = round(mg_dl / 18, 2)
+    else:
+        mmol_l = float(glucose_level)
+        mg_dl = mmol_l * 2
     logger.info(f'User {user_id} sent {mg_dl} mg/dl ({mmol_l} mmol/L)')
-    insert_data(user_id, mg_dl, round(mmol_l, 2))
+    insert_data(user_id, mg_dl, mmol_l)
+    return mg_dl, mmol_l
 
 
 def send_history_data(user_id: int, chat_id: int, time_period='month'):
@@ -137,31 +142,19 @@ def get_ag(user_id: int, time_period):
         data = select_all_data(user_id)
 
     if len(data) == 0:
-        return None
+        return None, None
     total_mg_dl = 0
     total_days = 0
     for row in data:
         total_mg_dl += row[2]
         total_days += 1
-    ag = total_mg_dl / total_days
-    return ag
-
-
-def send_ag(user_id: int, chat_id: int, time_period='60'):
-    ag = get_ag(user_id, time_period)
-    if ag is None:
-        message = f'No entries for the last {time_period} days'
-        bot.send_message(chat_id, message)
-        return
-    else:
-        message = f'Your calculated average glucose for the last {time_period} days is {ag} \n'
-        bot.send_message(chat_id, message)
-    return
+    avg_mg_dl = total_mg_dl / total_days
+    return avg_mg_dl, mg_dl_to_mmol_l(avg_mg_dl)
 
 
 def handle_last_a1c(user_id: int, chat_id: int, time_period='60'):
-    ag = get_ag(user_id, time_period=time_period)
-    a1c = (ag + 46.7) / 28.7
+    avg_mg_dl, _ = get_ag(user_id, time_period=time_period)
+    a1c = (avg_mg_dl + 46.7) / 28.7
     message = f'Your calculated A1C for the last {time_period} days is {round(a1c, 2)}% \n'
     message += "Please note that it is not a real A1C. " \
                "Please consider taking a real " \
@@ -192,8 +185,11 @@ def handle_message(message):
     chat_id = message.chat.id
 
     if user_input.isnumeric():
-        insert_glucose_level(user_id, user_input)
-        send_ag(chat_id, user_id)
+        mg_dl, mmol_l = insert_glucose_level(user_id, user_input)
+        avg_mg_dl, avg_mmol_l = get_ag(user_id, time_period='60')
+        message = f'Your input has been saved, which is {mg_dl} mg/dl or {mmol_l} mmol/l '
+        message += f'Your avg level is {avg_mg_dl} mg/dl or {avg_mmol_l} mmol/l for the last 60 days'
+        bot.send_message(chat_id, message)
     elif user_input == "/start":
         handle_start_command(chat_id)
     elif user_input == "/help":

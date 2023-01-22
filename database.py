@@ -55,9 +55,7 @@ def select_history_data(user_id: int, date_from: str, date_to: str, table_name='
     c = conn.cursor()
     q = f'SELECT * FROM {table_name} ' \
         f'WHERE user_id={user_id} AND timestamp BETWEEN ? AND ? ORDER BY timestamp DESC'
-    print(q)
     c.execute(q, (date_from, date_to))
     rows = c.fetchall()
-    print(rows)
     conn.close()
     return rows

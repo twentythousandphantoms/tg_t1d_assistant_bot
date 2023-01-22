@@ -53,7 +53,7 @@ def process_callback_main(call):
 
 @bot.callback_query_handler(func=lambda call: call.data in history_options)
 def process_callback_history(call):
-    send_history_data(call.message.from_user.id, call.message.chat.id, call.data)
+    send_history_data(call.from_user.id, call.message.chat.id, call.data)
 
 
 @bot.message_handler(content_types=['text'])

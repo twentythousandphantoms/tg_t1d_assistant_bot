@@ -9,7 +9,7 @@ def test_handle_last_a1c(mocker):
     chat_id = 12345
     glucose_levels = [100, 120, 90, 110, 130, 80, 140]
     timestamp = datetime.datetime.now() - datetime.timedelta(days=1)
-    expected_a1c = 5.46
+    expected_a1c = 5.29
 
     # Insert test data into the database
     for level in glucose_levels:

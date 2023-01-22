@@ -1,6 +1,6 @@
 import sqlite3
 import pytest
-from main import create_connection, create_table, insert_data, select_all_data
+from database import create_connection, create_table, insert_data, select_all_data
 
 
 def test_create_connection():
@@ -11,7 +11,7 @@ def test_create_connection():
 
 def test_create_table():
     conn = create_connection()
-    create_table(conn)
+    create_table('user_inputs')
     c = conn.cursor()
     c.execute("SELECT name FROM sqlite_master WHERE type='table'")
     tables = c.fetchall()
@@ -21,8 +21,8 @@ def test_create_table():
 
 def test_insert_data():
     conn = create_connection()
-    create_table(conn)
-    insert_data(conn, (1, '2022-01-01 10:00:00', 100, 5.6))
+    create_table('user_inputs')
+    insert_data(1, 100, 5.6, '2022-01-01 10:00:00')
     c = conn.cursor()
     c.execute("SELECT * FROM user_inputs")
     data = c.fetchall()
@@ -32,10 +32,10 @@ def test_insert_data():
 
 def test_select_all_data():
     conn = create_connection()
-    create_table(conn)
-    insert_data(conn, (1, '2022-01-01 10:00:00', 100, 5.6))
-    insert_data(conn, (1, '2022-01-02 12:00:00', 120, 6.7))
-    data = select_all_data(conn)
+    create_table('user_inputs')
+    insert_data(1, 100, 5.6, '2022-01-01 10:00:00')
+    insert_data(2, 110, 6.1, '2022-01-01 11:00:00')
+    data = select_all_data()
     assert (1, '2022-01-01 10:00:00', 100, 5.6) in data
-    assert (1, '2022-01-02 12:00:00', 120, 6.7) in data
+    assert (2, '2022-01-01 11:00:00', 110, 6.1) in data
     conn.close()

@@ -1,7 +1,6 @@
 import datetime
 import logging
 
-import sqlite3
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -40,40 +39,6 @@ keyboard = [
 history_keyboard = [
     [InlineKeyboardButton(history_options[key]['label'], callback_data=history_options[key]['callback_data']) for key in
      history_options]]
-
-
-# callback query handler
-@bot.callback_query_handler(func=lambda call: call.data in buttons)
-def process_callback_main(call):
-    if call.data == "entry_glucose_level":
-        bot.send_message(call.message.chat.id, "Please enter your glucose level")
-    elif call.data == "request_history":
-        bot.send_message(call.message.chat.id, "Please choose a history option",
-                         reply_markup=InlineKeyboardMarkup(history_keyboard))
-
-
-@bot.callback_query_handler(func=lambda call: call.data in history_options)
-def process_callback_history(call):
-    send_history_data(call.from_user.id, call.message.chat.id, call.data)
-
-
-@bot.message_handler(content_types=['text'])
-def handle_message(message):
-    user_input = message.text
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-
-    if user_input.isnumeric():
-        insert_glucose_level(user_id, user_input)
-        handle_last_week_a1c(chat_id, user_id)
-    elif user_input == "/start":
-        handle_start_command(chat_id)
-    elif user_input == "/help":
-        handle_help_command(chat_id)
-    elif user_input == "/a1c":
-        handle_last_week_a1c(chat_id, user_id)
-    else:
-        handle_invalid_input(chat_id)
 
 
 def handle_start_command(chat_id):
@@ -117,8 +82,6 @@ def send_history_data(user_id: int, chat_id: int, time_period: str):
         formats the timestamp and message, then sends the message to the user via the bot. Finally, it closes the
         connection to the database.
     """
-    conn = sqlite3.connect('user_inputs.db')
-    c = conn.cursor()
     logger.info(f'Chat ID: {chat_id}: User {user_id} requested a history data for period: {time_period}')
     if time_period == "1 day":
         date_range = (datetime.datetime.now() - datetime.timedelta(days=1), datetime.datetime.now())
@@ -129,7 +92,7 @@ def send_history_data(user_id: int, chat_id: int, time_period: str):
     elif time_period == "month":
         date_range = (datetime.datetime.now() - datetime.timedelta(days=30), datetime.datetime.now())
     elif time_period == "all":
-        rows = select_all_data(conn, user_id)
+        rows = select_all_data(user_id)
     else:
         message = "Invalid time period"
         bot.send_message(chat_id, message)
@@ -155,7 +118,6 @@ def send_history_data(user_id: int, chat_id: int, time_period: str):
         message += "{} - {} mg/dl ({} mmol/l)\n".format(timestamp, mg_dl, round(mmol_l, 2))
     bot.send_message(chat_id, message)
     logger.info(f'Sent: {message}')
-    conn.close()
 
 
 def a1c_calculation(mg_dl):
@@ -188,6 +150,40 @@ def handle_last_week_a1c(user_id: int, chat_id: int):
     message = "Your A1C for the last week is {}%".format(round(a1c, 2))
     bot.send_message(chat_id, message)
     return
+
+
+# callback query handler
+@bot.callback_query_handler(func=lambda call: call.data in buttons)
+def process_callback_main(call):
+    if call.data == "entry_glucose_level":
+        bot.send_message(call.message.chat.id, "Please enter your glucose level")
+    elif call.data == "request_history":
+        bot.send_message(call.message.chat.id, "Please choose a history option",
+                         reply_markup=InlineKeyboardMarkup(history_keyboard))
+
+
+@bot.callback_query_handler(func=lambda call: call.data in history_options)
+def process_callback_history(call):
+    send_history_data(call.from_user.id, call.message.chat.id, call.data)
+
+
+@bot.message_handler(content_types=['text'])
+def handle_message(message):
+    user_input = message.text
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    if user_input.isnumeric():
+        insert_glucose_level(user_id, user_input)
+        handle_last_week_a1c(chat_id, user_id)
+    elif user_input == "/start":
+        handle_start_command(chat_id)
+    elif user_input == "/help":
+        handle_help_command(chat_id)
+    elif user_input == "/a1c":
+        handle_last_week_a1c(chat_id, user_id)
+    else:
+        handle_invalid_input(chat_id)
 
 
 bot.polling()

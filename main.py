@@ -130,7 +130,7 @@ def a1c_calculation(mg_dl):
 
 def get_ag(user_id: int, time_period):
     if time_period.isnumeric():
-        date_from = (datetime.datetime.now() - datetime.timedelta(days=time_period)).strftime("%Y-%m-%d")
+        date_from = (datetime.datetime.now() - datetime.timedelta(days=int(time_period))).strftime("%Y-%m-%d")
         date_to = datetime.datetime.now().strftime("%Y-%m-%d")
         data = select_history_data(user_id, date_from, date_to)
     else:
@@ -159,10 +159,10 @@ def send_ag(user_id: int, chat_id: int, time_period='60'):
     return
 
 
-def handle_last_a1c(user_id: int, chat_id: int, time_period=60):
+def handle_last_a1c(user_id: int, chat_id: int, time_period='60'):
     ag = get_ag(user_id, time_period=time_period)
     a1c = (ag + 46.7) / 28.7
-    message = "Your calculated A1C for the last {} days is {}% \n".format(round(a1c, 2), time_period)
+    message = f'Your calculated A1C for the last {time_period} days is {round(a1c, 2)}% \n'
     message += "Please note that it is not a real A1C. " \
                "Please consider taking a real " \
                "[A1C blood test](https://www.healthline.com/health/type-2-diabetes/a1c-test)."

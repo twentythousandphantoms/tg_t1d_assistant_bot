@@ -1,4 +1,3 @@
-import sqlite3
 import pytest
 from database import create_connection, create_table, insert_data, select_all_data
 

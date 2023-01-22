@@ -133,7 +133,7 @@ def a1c_calculation(mg_dl):
     return a1c
 
 
-def get_ag(user_id: int, time_period):
+def get_avg(user_id: int, time_period):
     if time_period.isnumeric():
         date_from = (datetime.datetime.now() - datetime.timedelta(days=int(time_period))).strftime("%Y-%m-%d")
         date_to = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -149,7 +149,7 @@ def get_ag(user_id: int, time_period):
         total_mg_dl += row[2]
         total_days += 1
     avg_mg_dl = total_mg_dl / total_days
-    return avg_mg_dl, mg_dl_to_mmol_l(avg_mg_dl)
+    return round(avg_mg_dl), mg_dl_to_mmol_l(avg_mg_dl)
 
 
 def handle_last_a1c(user_id: int, chat_id: int, time_period='60'):
@@ -186,9 +186,9 @@ def handle_message(message):
 
     if user_input.isnumeric():
         mg_dl, mmol_l = insert_glucose_level(user_id, user_input)
-        avg_mg_dl, avg_mmol_l = get_ag(user_id, time_period='60')
-        message = f'Your input has been saved, which is {mg_dl} mg/dl or {mmol_l} mmol/l '
-        message += f'Your avg level is {avg_mg_dl} mg/dl or {avg_mmol_l} mmol/l for the last 60 days'
+        avg_mg_dl, avg_mmol_l = get_avg(user_id, time_period='60')
+        message = f'Your input has been saved, which is {mg_dl} mg/dl or {mmol_l} mmol/l. \n'
+        message += f'Your avg level is {avg_mg_dl} mg/dl or {avg_mmol_l} mmol/l for the last 60 days.'
         bot.send_message(chat_id, message)
     elif user_input == "/start":
         handle_start_command(chat_id)

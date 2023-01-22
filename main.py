@@ -6,6 +6,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import TOKEN
+from database import insert_data, select_all_data, select_history_data
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(funcName)s - %(levelname)s - %(message)s')
@@ -58,33 +59,52 @@ def process_callback_history(call):
 
 @bot.message_handler(content_types=['text'])
 def handle_message(message):
+    user_input = message.text
     user_id = message.from_user.id
     chat_id = message.chat.id
-    user_input = message.text
+
     if user_input.isnumeric():
-        user_input = float(user_input)
-        if user_input > 35:
-            mg_dl = user_input
-            mmol_l = round(mg_dl / 18, 1)
-        elif user_input <= 35:
-            mmol_l = user_input
-            mg_dl = round(mmol_l * 18, 0)
-        conn = sqlite3.connect('user_inputs.db')
-        c = conn.cursor()
-        c.execute("INSERT INTO user_inputs (timestamp, user_id, mg_dl,mmol_l) VALUES (?,?,?,?)",
-                  (datetime.datetime.now(), user_id, mg_dl, mmol_l))
-        conn.commit()
-        c.close()
-        conn.close()
-        bot.send_message(chat_id,
-                         f'Your input of {user_input} has been saved, which is {mg_dl} mg/dl or {mmol_l} mmol/L')
-        logger.info(f'User {user_id} sent {mg_dl} mg/dl ({mmol_l} mmol/L)')
-        send_last_week_a1c(user_id, chat_id)
-        # send message with inline keyboard
-        bot.send_message(chat_id, "Please choose an option", reply_markup=InlineKeyboardMarkup(keyboard))
+        insert_glucose_level(user_id, user_input)
+        handle_last_week_a1c(chat_id, user_id)
+    elif user_input == "/start":
+        handle_start_command(chat_id)
+    elif user_input == "/help":
+        handle_help_command(chat_id)
+    elif user_input == "/a1c":
+        handle_last_week_a1c(chat_id, user_id)
     else:
-        bot.send_message(chat_id, "Invalid input. Please enter a number (glucose level) or choose an option",
-                         reply_markup=InlineKeyboardMarkup(keyboard))
+        handle_invalid_input(chat_id)
+
+
+def handle_start_command(chat_id):
+    bot.send_message(chat_id, "Welcome! I am your T1D assistant bot. How can I help you today?")
+
+
+def handle_help_command(chat_id):
+    help_text = "Here are the available commands:\n"
+    help_text += "/start - start the bot\n"
+    help_text += "/help - display this help message\n"
+    help_text += "/glucose - input a glucose level (mg/dL)\n"
+    help_text += "/a1c - calculate your estimated A1C based on the last 7 days of glucose levels\n"
+    help_text += "or choose an option from below:\n"
+    bot.send_message(chat_id=chat_id, text=help_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def handle_invalid_input(chat_id):
+    """
+        This function is used to handle invalid input from the user.
+        It takes the update and context as inputs, and sends a message to the user
+        indicating that their input is invalid.
+    """
+    invalid_message = "Invalid input. Please enter a number (glucose level) or choose an option"
+    bot.send_message(chat_id, invalid_message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def insert_glucose_level(user_id: int, glucose_level: str):
+    mg_dl = float(glucose_level)
+    mmol_l = mg_dl / 18
+    logger.info(f'User {user_id} sent {mg_dl} mg/dl ({mmol_l} mmol/L)')
+    insert_data(user_id, mg_dl, round(mmol_l, 2))
 
 
 def send_history_data(user_id: int, chat_id: int, time_period: str):
@@ -109,16 +129,15 @@ def send_history_data(user_id: int, chat_id: int, time_period: str):
     elif time_period == "month":
         date_range = (datetime.datetime.now() - datetime.timedelta(days=30), datetime.datetime.now())
     elif time_period == "all":
-        c.execute("SELECT * FROM user_inputs WHERE user_id=? ORDER BY timestamp DESC", (user_id,))
+        rows = select_all_data(conn, user_id)
     else:
         message = "Invalid time period"
         bot.send_message(chat_id, message)
         logger.info(f'Sent: {message}')
         return
     if time_period != "all":
-        c.execute("SELECT * FROM user_inputs WHERE user_id=? AND timestamp BETWEEN ? AND ? ORDER BY timestamp DESC",
-                  (user_id, date_range[0], date_range[1]))
-    rows = c.fetchall()
+        rows = select_history_data(user_id, date_range[0], date_range[1])
+
     if len(rows) == 0:
         message = "No entries for the {}".format(time_period)
         bot.send_message(chat_id, message)
@@ -146,34 +165,29 @@ def a1c_calculation(mg_dl):
     return a1c
 
 
-def send_last_week_a1c(user_id, chat_id):
-    # connect to sqlite3 database
-    conn = sqlite3.connect('user_inputs.db')
-    c = conn.cursor()
-    # get current time
-    current_time = datetime.datetime.now()
-    # get time 7 days ago
-    last_week_time = current_time - datetime.timedelta(days=7)
-    # convert to string
-    last_week_time = last_week_time.strftime("%Y-%m-%d %H:%M:%S")
-
-    # select mg/dl entries from user_inputs table for specific user id and for the last 7 days
-    c.execute("SELECT mg_dl FROM user_inputs WHERE user_id = ? AND timestamp > ? ORDER BY timestamp DESC",
-              (user_id, last_week_time))
-    entries = c.fetchall()
-    # calculate the average of mg/dl entries
+def handle_last_week_a1c(user_id: int, chat_id: int):
+    """
+    It is used to send the A1C data of the user for the last week. This function takes user_id and bot as the input
+    parameter. The function first calls the select_history_data function to retrieve the data from the 'user_inputs'
+    table based on the user_id and last week date range. Then it calculates the A1C using the data. Finally,
+    it sends the A1C data to the user via the bot.
+    """
+    date_from = (datetime.datetime.now() - datetime.timedelta(weeks=1)).strftime("%Y-%m-%d")
+    date_to = datetime.datetime.now().strftime("%Y-%m-%d")
+    data = select_history_data(user_id, date_from, date_to)
+    if len(data) == 0:
+        message = "No entries for the last week"
+        bot.send_message(chat_id, message)
+        return
     total_mg_dl = 0
-    for entry in entries:
-        total_mg_dl += entry[0]
-    if len(entries) > 0:
-        avg_mg_dl = total_mg_dl / len(entries)
-        a1c = a1c_calculation(avg_mg_dl)
-        bot.send_message(chat_id, f'The average A1C for the last 7 days is {a1c}')
-    else:
-        bot.send_message(chat_id, 'No entries found for the last 7 days')
-    # close cursor and connection
-    c.close()
-    conn.close()
+    total_days = 0
+    for row in data:
+        total_mg_dl += row[2]
+        total_days += 1
+    a1c = (total_mg_dl / total_days + 46.7) / 28.7
+    message = "Your A1C for the last week is {}%".format(round(a1c, 2))
+    bot.send_message(chat_id, message)
+    return
 
 
 bot.polling()

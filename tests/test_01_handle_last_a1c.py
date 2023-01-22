@@ -1,4 +1,4 @@
-from tg_t1d_assistant_bot.main import insert_data, mg_dl_to_mmol_l, handle_last_a1c
+from main import insert_data, mg_dl_to_mmol_l, handle_last_a1c
 import datetime
 import pytest
 

@@ -34,6 +34,7 @@ class NightscoutAnalyzer:
         params = {"count": count, "start": start_time, "end": end_time}
         self.entries = sorted(self._fetch_from_endpoint('entries', params), key=lambda x: x.get('date', ''))
         self.treatments = self._fetch_from_endpoint('treatments')
+        logger.info(f"Fetched {len(self.entries)} entries and {len(self.treatments)} treatments")
 
     def analyze_data(self):
         """Calculate average ISF from correction periods."""
@@ -46,11 +47,10 @@ class NightscoutAnalyzer:
         correction_periods = [x for x in correction_periods if x is not None]
 
         average_isf = sum(correction_periods) / len(correction_periods) if correction_periods else None
-        self.logger.info(f"Average ISF: {average_isf}")
         return average_isf
 
     def _compute_isf(self, treatment):
-        """Compute ISF for a given treatment."""
+        """Compute ISF (Insulin Sensitivity Factor) for a given treatment."""
         start_time = treatment.get('timestamp')
         end_time = start_time + 4 * 3600
 
@@ -69,36 +69,25 @@ class NightscoutAnalyzer:
         )
 
     def predict_glucose(self, hours_ahead=1):
-        timestamps = [entry.get('date', 0) for entry in self.entries if entry.get('date')]
-        glucose_values = [entry.get('sgv', 0) for entry in self.entries if entry.get('sgv')]
-
-        if not timestamps or not glucose_values:
+        current_glucose = self.entries[-1]['sgv'] if self.entries else None
+        if not current_glucose:
             self.logger.warning("Insufficient data for prediction.")
             return None
 
-        # Calculate IOB for each timestamp
-        iob_values = [self.total_IOB_for_period(datetime.utcfromtimestamp(timestamp / 1000), self.calculate_dia()) for
-                      timestamp in timestamps]
+        # Получаем ISF (или значение по умолчанию, если ISF = None)
+        isf = self.analyze_data() or 4 * 18
 
-        # Now timestamps will be a 2D array: [[timestamp, iob], [timestamp, iob], ...]
-        X = list(zip(timestamps, iob_values))
-        y = glucose_values
+        future_glucose = current_glucose
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        # Итеративно вычисляем уровень глюкозы для каждого часа вперед
+        for hour in range(1, hours_ahead + 1):
+            future_iob = self.total_IOB_for_period(datetime.utcnow() + timedelta(hours=hour), self.calculate_dia())
+            logger.info(f"    IOB in {hour} hour(s): {round(future_iob, 2)}")
+            glucose_change_due_to_insulin = future_iob * isf
+            logger.info(f"    Glucose change due to insulin in {hour} hour(s): {round(glucose_change_due_to_insulin)} mg/dL, {round(glucose_change_due_to_insulin / 18, 1)} mmol/L")
+            future_glucose -= glucose_change_due_to_insulin  # вычитаем, так как инсулин снижает уровень глюкозы
 
-        model = RandomForestRegressor(n_estimators=100).fit(X_train, y_train)
-
-        y_pred = model.predict(X_test)
-        mse = mean_squared_error(y_test, y_pred)
-
-        current_timestamp = timestamps[-1]
-        current_iob = self.total_IOB_for_period(datetime.utcfromtimestamp(current_timestamp / 1000),
-                                                self.calculate_dia())
-        future_timestamp = current_timestamp + hours_ahead * 3600 * 1000
-        future_iob = self.total_IOB_for_period(datetime.utcfromtimestamp(future_timestamp / 1000), self.calculate_dia())
-        future_glucose = model.predict([[future_timestamp, future_iob]])
-
-        return future_glucose[0]
+        return future_glucose
 
     def total_IOB_for_period(self, target_time, DIA_hours):
         # Make target_time offset-aware
@@ -145,7 +134,7 @@ def get_start_end_time(period=None):
 
 if __name__ == "__main__":
     logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     handler = logging.StreamHandler(sys.stdout)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(funcName)s - %(levelname)s - %(message)s')
     handler.setFormatter(formatter)
@@ -153,17 +142,27 @@ if __name__ == "__main__":
 
     TOKEN = None
     PERIOD = '1 month'
+    COUNT = 100000
     analyzer = NightscoutAnalyzer("https://twentythousandphantoms.my.nightscoutpro.com", TOKEN)
     start_time, end_time = get_start_end_time(PERIOD)
-    analyzer.fetch_data(start_time=start_time, end_time=end_time, count=1000)
-    analyzer.analyze_data()
+    analyzer.fetch_data(start_time=start_time, end_time=end_time, count=COUNT)
+    isf = analyzer.analyze_data()
+    logger.info(f"Calculated ISF: {isf}")
 
+    current_human_readable_time = (datetime.utcnow() + timedelta(hours=3)).strftime("%H:%M")
+    logger.info("Current time: " + current_human_readable_time)
     logger.info(f"Current glucose level: {analyzer.entries[-1]['sgv']} mg/dl, ({round(analyzer.entries[-1]['sgv'] / 18, 1)} mmol/l)")
     logger.info(f"Total IOB for the last {analyzer.calculate_dia()} hours: {round(analyzer.total_IOB_for_period(datetime.utcnow(), analyzer.calculate_dia()), 2)}")
+    logger.info("")
 
+    # timezone: Istanbul
     for hours in [1, 2, 3, 4]:
         predicted_glucose = analyzer.predict_glucose(hours_ahead=hours)
-        logger.info(f"Prediction for {hours} hour(s) in : {round(predicted_glucose)} mg/dl, ({round(predicted_glucose / 18, 1)} mmol/l)")
 
+        # logger.info(f"Prediction at : {round(predicted_glucose)} mg/dl, ({round(predicted_glucose / 18, 1)} mmol/l)")
+        # timezone: Istanbul
+        predicted_human_readable_time = (datetime.utcnow() + timedelta(hours=3 + hours)).strftime("%H:%M")
+        logger.info(f"Prediction at {predicted_human_readable_time}: {round(predicted_glucose)} mg/dl, ({round(predicted_glucose / 18, 1)} mmol/l)")
+        logger.info("")
 
     logger.info("Done.")

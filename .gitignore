@@ -1,3 +1,6 @@
 venv/
 config.py
 user_inputs.db
+
+# Unit test / coverage reports
+.pytest_cache/

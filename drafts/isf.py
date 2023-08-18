@@ -69,26 +69,36 @@ class NightscoutAnalyzer:
         )
 
     def predict_glucose(self, hours_ahead=1):
-        """Predict glucose level using RandomForestRegressor."""
         timestamps = [entry.get('date', 0) for entry in self.entries if entry.get('date')]
         glucose_values = [entry.get('sgv', 0) for entry in self.entries if entry.get('sgv')]
 
-        # Ensure equal lengths
-        min_length = min(len(timestamps), len(glucose_values))
-        timestamps = timestamps[:min_length]
-        glucose_values = glucose_values[:min_length]
-
-        if not timestamps:
+        if not timestamps or not glucose_values:
             self.logger.warning("Insufficient data for prediction.")
             return None
 
-        X = np.array(timestamps).reshape(-1, 1)
+        # Calculate IOB for each timestamp
+        iob_values = [self.total_IOB_for_period(datetime.utcfromtimestamp(timestamp / 1000), self.calculate_dia()) for
+                      timestamp in timestamps]
+
+        # Now timestamps will be a 2D array: [[timestamp, iob], [timestamp, iob], ...]
+        X = list(zip(timestamps, iob_values))
         y = glucose_values
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
         model = RandomForestRegressor(n_estimators=100).fit(X_train, y_train)
-        future_timestamp = timestamps[-1] + hours_ahead * 3600
-        return model.predict([[future_timestamp]])[0]
+
+        y_pred = model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+
+        current_timestamp = timestamps[-1]
+        current_iob = self.total_IOB_for_period(datetime.utcfromtimestamp(current_timestamp / 1000),
+                                                self.calculate_dia())
+        future_timestamp = current_timestamp + hours_ahead * 3600 * 1000
+        future_iob = self.total_IOB_for_period(datetime.utcfromtimestamp(future_timestamp / 1000), self.calculate_dia())
+        future_glucose = model.predict([[future_timestamp, future_iob]])
+
+        return future_glucose[0]
 
     def total_IOB_for_period(self, target_time, DIA_hours):
         # Make target_time offset-aware
@@ -148,12 +158,12 @@ if __name__ == "__main__":
     analyzer.fetch_data(start_time=start_time, end_time=end_time, count=1000)
     analyzer.analyze_data()
 
-    logger.info(f"Current glucose level: {analyzer.entries[-1]['sgv']}")
+    logger.info(f"Current glucose level: {analyzer.entries[-1]['sgv']} mg/dl, ({round(analyzer.entries[-1]['sgv'] / 18, 1)} mmol/l)")
+    logger.info(f"Total IOB for the last {analyzer.calculate_dia()} hours: {round(analyzer.total_IOB_for_period(datetime.utcnow(), analyzer.calculate_dia()), 2)}")
+
     for hours in [1, 2, 3, 4]:
         predicted_glucose = analyzer.predict_glucose(hours_ahead=hours)
-        logger.info(f"Prediction for {hours} hour(s) in mg/dl: {round(predicted_glucose)}")
-        logger.info(f"Prediction for {hours} hour(s) in mmol/l: {round(predicted_glucose / 18, 1)}")
+        logger.info(f"Prediction for {hours} hour(s) in : {round(predicted_glucose)} mg/dl, ({round(predicted_glucose / 18, 1)} mmol/l)")
 
-    logger.info(f"Total IOB for the last {analyzer.calculate_dia()}: {analyzer.total_IOB_for_period(datetime.utcnow(), analyzer.calculate_dia())}")
 
     logger.info("Done.")

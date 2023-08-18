@@ -1,8 +1,13 @@
 import requests
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error
+
 
 class NightscoutAnalyzer:
     def __init__(self, url, token=None):
@@ -15,185 +20,120 @@ class NightscoutAnalyzer:
         if self.token:
             self.headers["Authorization"] = f"Bearer {self.token}"
 
-    def fetch_data(self, start_time=None, end_time=None, count=1000):
-        params = {"count": count}
-
-        if start_time:
-            params['start'] = start_time
-        if end_time:
-            params['end'] = end_time
-
+    def _fetch_from_endpoint(self, endpoint, params={}):
+        """Utility function to fetch data from Nightscout API endpoint."""
         try:
-            entries_response = requests.get(f"{self.url}/api/v1/entries.json", headers=self.headers, params=params)
+            response = requests.get(f"{self.url}/api/v1/{endpoint}.json", headers=self.headers, params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            self.logger.error(f"Error fetching data from {endpoint}: {e}")
+            return []
 
-            self.logger.debug(f"URL: {entries_response.url}")
-            # Trip the response to 1000 characters
-            self.logger.debug(f"Response: {entries_response.text[:1000] + '...' if len(entries_response.text) > 1000 else entries_response.text}")
-
-            if entries_response.status_code == 200:
-                self.entries = entries_response.json()
-                self.logger.info(f"Successfully fetched CGM data. Number of entries: {len(self.entries)}")
-
-                # Show only 15 last entries sorted by date
-                self.entries.sort(key=lambda x: x['date'], reverse=True)
-                self.logger.debug(f"Last 15 entries: ")
-                for entry in self.entries[-15:]:
-                    self.logger.debug(f"Entry: {entry}")
-
-            else:
-                self.logger.error(
-                    f"Error fetching CGM data. Status code: {entries_response.status_code}. "
-                    f"URL: {entries_response.url}. "
-                    f"Response: {entries_response.text}")
-
-            treatments_response = requests.get(f"{self.url}/api/v1/treatments.json", headers=self.headers)
-            if treatments_response.status_code == 200:
-                self.treatments = treatments_response.json()
-                self.logger.info(f"Successfully fetched treatments data. Number of treatments: {len(self.treatments)}")
-                for treatment in self.treatments:
-                    self.logger.debug(f"Treatment: {treatment}")
-            else:
-                self.logger.error(
-                    f"Error fetching treatments data. Status code: {treatments_response.status_code}. Response: {treatments_response.text}")
-
-        except Exception as e:
-            self.logger.error(f"Error fetching data: {e}")
+    def fetch_data(self, start_time=None, end_time=None, count=1000):
+        params = {"count": count, "start": start_time, "end": end_time}
+        self.entries = sorted(self._fetch_from_endpoint('entries', params), key=lambda x: x.get('date', ''))
+        self.treatments = self._fetch_from_endpoint('treatments')
 
     def analyze_data(self):
-        correction_periods = []
-
-        for treatment in self.treatments:
-            if treatment.get('eventType') == 'Insulin' and not any(
-                    t.get('eventType') == 'Meal Bolus' for t in self.treatments if
-                    abs(t.get('timestamp', 0) - treatment.get('timestamp', 0)) < 4 * 3600):
-
-                start_time = treatment.get('timestamp')
-                end_time = start_time + 4 * 3600
-
-                start_glucose = next((e['glucose'] for e in self.entries if e.get('timestamp') == start_time), None)
-                end_glucose = next((e['glucose'] for e in self.entries if e.get('timestamp') == end_time), None)
-
-                if start_glucose and end_glucose and treatment.get('insulin'):
-                    isf = (start_glucose - end_glucose) / treatment['insulin']
-                    correction_periods.append(isf)
-                    self.logger.info(f"Found correction period. ISF: {isf}")
-                else:
-                    missing_data = []
-                    if not start_glucose:
-                        missing_data.append("start glucose")
-                    if not end_glucose:
-                        missing_data.append("end glucose")
-                    self.logger.warning(f"Missing data for correction period: {', '.join(missing_data)}.")
-
-        if not correction_periods:
-            self.logger.warning("No correction periods found for ISF calculation.")
+        """Calculate average ISF from correction periods."""
+        correction_periods = [
+            self._compute_isf(treatment)
+            for treatment in self.treatments
+            if treatment.get('eventType') == 'Insulin' and not self._is_near_meal(treatment)
+        ]
+        # Remove None values
+        correction_periods = [x for x in correction_periods if x is not None]
 
         average_isf = sum(correction_periods) / len(correction_periods) if correction_periods else None
         self.logger.info(f"Average ISF: {average_isf}")
         return average_isf
 
-    def calculate_dia(self):
-        # Этот метод требует сложного анализа, и в этом примере мы просто возвращаем стандартное значение (например, 4 часа для быстродействующего инсулина)
-        return 4  # in hours
+    def _compute_isf(self, treatment):
+        """Compute ISF for a given treatment."""
+        start_time = treatment.get('timestamp')
+        end_time = start_time + 4 * 3600
+
+        start_glucose = next((e['sgv'] for e in self.entries if e.get('timestamp') == start_time), None)
+        end_glucose = next((e['sgv'] for e in self.entries if e.get('timestamp') == end_time), None)
+
+        if start_glucose and end_glucose and treatment.get('insulin', 0) != 0:
+            return (start_glucose - end_glucose) / treatment.get('insulin')
+        return None
+
+    def _is_near_meal(self, treatment):
+        """Check if the treatment is near a meal."""
+        return any(
+            t.get('eventType') == 'Meal Bolus' and abs(t.get('timestamp', 0) - treatment.get('timestamp', 0)) < 4 * 3600
+            for t in self.treatments
+        )
 
     def predict_glucose(self, hours_ahead=1):
-        from sklearn.model_selection import train_test_split
-        from sklearn.linear_model import LinearRegression
-        from sklearn.metrics import mean_squared_error
-        import numpy as np
+        """Predict glucose level using RandomForestRegressor."""
+        timestamps = [entry.get('date', 0) for entry in self.entries if entry.get('date')]
+        glucose_values = [entry.get('sgv', 0) for entry in self.entries if entry.get('sgv')]
 
+        # Ensure equal lengths
+        min_length = min(len(timestamps), len(glucose_values))
+        timestamps = timestamps[:min_length]
+        glucose_values = glucose_values[:min_length]
 
-        # 1. Подготовка данных
-        self.logger.debug("Preparing data for prediction...")
-        timestamps = [entry['date'] for entry in self.entries if 'date' in entry]
-        glucose_values = [entry['sgv'] for entry in self.entries if 'sgv' in entry]
+        if not timestamps:
+            self.logger.warning("Insufficient data for prediction.")
+            return None
 
-        # Преобразование данных для обучения модели
         X = np.array(timestamps).reshape(-1, 1)
         y = glucose_values
 
-        # 2. Разделение данных на обучающую и тестовую выборки
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-        # 3. Обучение модели
-        model = LinearRegression().fit(X_train, y_train)
-
-        # 4. Тестирование модели
-        y_pred = model.predict(X_test)
-        mse = mean_squared_error(y_test, y_pred)
-
-        # 5. Прогнозирование уровня глюкозы
-        self.logger.debug("Predicting glucose level for the future...")
-        current_timestamp = timestamps[-1]
-        future_timestamp = current_timestamp + hours_ahead * 3600
-        future_glucose = model.predict([[future_timestamp]])
-
-        return future_glucose[0]
-
-    def fetch_insulin_entries_for_period(self, end_time, duration_hours):
-
-        # Фильтруем записи, чтобы оставить только те, которые касаются инъекций инсулина
-        # check if entry keys include 'insulin'
-        # insulin_entries = [entry for entry in self.treatments if entry. == 'insulin']
-        insulin_entries = [entry for entry in self.treatments if 'insulin' in entry]
-
-        # Определяем начальное время для извлечения записей
-        start_time = end_time - timedelta(hours=duration_hours)
-
-        # Оставляем только записи, которые находятся в заданном временном диапазоне
-        relevant_entries = [entry for entry in insulin_entries if
-                            start_time <= datetime.fromisoformat(entry['created_at'].rstrip('Z')) <= end_time]
-
-        return relevant_entries
-
-    def calculate_IOB(self, insulin_dose, time_since_injection, DIA):
-        """
-        Calculate Insulin On Board (IOB) based on a simple linear model.
-
-        :param insulin_dose: The total amount of insulin injected.
-        :param time_since_injection: The time since the insulin was injected (in hours).
-        :param DIA: Duration of Insulin Activity (in hours).
-        :return: Estimated IOB.
-        """
-        if time_since_injection > DIA:
-            return 0
-        else:
-            return insulin_dose * (1 - (time_since_injection / DIA))
+        model = RandomForestRegressor(n_estimators=100).fit(X_train, y_train)
+        future_timestamp = timestamps[-1] + hours_ahead * 3600
+        return model.predict([[future_timestamp]])[0]
 
     def total_IOB_for_period(self, target_time, DIA_hours):
-        # Извлекаем все записи инъекции за период DIA до целевого времени
-        insulin_entries = self.fetch_insulin_entries_for_period(target_time, DIA_hours)
+        # Make target_time offset-aware
+        target_time = target_time.replace(tzinfo=timezone.utc)
+        insulin_entries = self._fetch_insulin_entries_for_period(target_time, DIA_hours)
+        return sum(self._compute_IOB(entry, target_time, DIA_hours) for entry in insulin_entries)
 
-        total_iob = 0
+    def _fetch_insulin_entries_for_period(self, end_time, duration_hours):
+        start_time = end_time - timedelta(hours=duration_hours)
+        return [entry for entry in self.treatments if entry.get('insulin') and start_time <= datetime.fromisoformat(
+            entry['created_at'].replace('Z', '+00:00')) <= end_time]
 
-        for entry in insulin_entries:
-            time_since_injection = (target_time - datetime.fromisoformat(entry['created_at'].replace('Z', '+00:00'))
-                                    ).total_seconds() / 3600
-            # Предполагаем, что у нас есть функция calculate_IOB, которая вычисляет IOB на основе времени с момента инъекции и количества инсулина
-            iob = self.calculate_IOB(entry['insulin'], time_since_injection, DIA_hours)
-            total_iob += iob
+    @staticmethod
+    def _compute_IOB(entry, target_time, DIA_hours):
+        time_since_injection = (target_time - datetime.fromisoformat(entry['created_at'].replace('Z', '+00:00'))).total_seconds() / 3600
+        return entry['insulin'] * (1 - (time_since_injection / DIA_hours)) if time_since_injection <= DIA_hours else 0
 
-        return total_iob
+    @staticmethod
+    def calculate_dia():
+        return 4  # Placeholder value
 
 def get_start_end_time(period=None):
+    def get_period_days(period):
+        """Convert period string into days."""
+        period_conversion = {
+            'day': 1,
+            'week': 7,
+            'month': 30
+        }
 
-    def convert_period(period):
-        if not period:
-            return None
-        period = period.lower()
-        period = re.sub(r'(\d+)\s+months?', r'\1 * 30', period)
-        period = re.sub(r'(\d+)\s+weeks?', r'\1 * 7', period)
-        period = re.sub(r'(\d+)\s+days?', r'\1', period)
-        return eval(period)
+        def replace_with_conversion(match):
+            number = match.group(1)
+            unit = match.group(2).rstrip('s')
+            return f"{number} * {period_conversion.get(unit, 1)}"
 
-    period_days = convert_period(period) or 999
+        period_in_days = eval(re.sub(r'(\d+)\s+([a-z]+)', replace_with_conversion, period.lower()))
+        return period_in_days
+
+    period_days = period and get_period_days(period) or 999
     end_time = datetime.utcnow().isoformat() + "Z"
     start_time = (datetime.utcnow() - timedelta(days=period_days)).isoformat() + "Z"
-
     return start_time, end_time
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
     handler = logging.StreamHandler(sys.stdout)
@@ -217,4 +157,3 @@ if __name__ == "__main__":
     logger.info(f"Total IOB for the last {analyzer.calculate_dia()}: {analyzer.total_IOB_for_period(datetime.utcnow(), analyzer.calculate_dia())}")
 
     logger.info("Done.")
-

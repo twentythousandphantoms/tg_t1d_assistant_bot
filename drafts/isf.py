@@ -84,9 +84,10 @@ class NightscoutAnalyzer:
         """Check if the treatment is near a meal."""
         treatment_time = self._parse_date(treatment.get('created_at'))
         # Check if there is a meal bolus within 4 hours of the treatment
+        FOUR_HOURS_IN_SECONDS = 4 * 3600
         return any(
             t.get('eventType') == 'Meal Bolus' and abs(
-                (self._parse_date(t.get('created_at')) - treatment_time).total_seconds()) < 4 * 3600
+                (self._parse_date(t.get('created_at')) - treatment_time).total_seconds()) < FOUR_HOURS_IN_SECONDS
             for t in self.treatments
         )
 

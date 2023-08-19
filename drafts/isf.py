@@ -1,12 +1,11 @@
-import requests
-import logging
-import sys
-from datetime import datetime, timedelta, timezone
 import re
-import numpy as np
+import sys
+import logging
+import requests
+from datetime import datetime, timedelta, timezone
+
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error
 
 
 class NightscoutAnalyzer:
@@ -128,7 +127,82 @@ class NightscoutAnalyzer:
 
     @staticmethod
     def calculate_dia():
-        return 4  # Placeholder value
+        return 4.5  # Placeholder value
+
+    def combined_glucose_prediction(self, hours_ahead=1):
+        # Получаем текущие значения
+        current_glucose = self.entries[-1]['sgv'] if self.entries else None
+        if not current_glucose:
+            self.logger.warning("Insufficient data for prediction.")
+            return None
+
+        # Получаем ISF или используем дефолтное значение
+        isf = self.analyze_data() or self.default_isf
+
+        # Готовим данные для обучения модели
+        timestamps = [entry.get('date', 0) for entry in self.entries if entry.get('date')]
+        glucose_values = [entry.get('sgv', 0) for entry in self.entries if entry.get('sgv')]
+        iob_values = [self.total_IOB_for_period(datetime.utcfromtimestamp(timestamp / 1000), self.calculate_dia()) for
+                      timestamp in timestamps]
+
+        # Формируем массив признаков (timestamp, IOB, ISF) и целевую переменную (sgv)
+        X = list(zip(timestamps, iob_values, [isf] * len(timestamps)))
+        y = glucose_values
+
+        # Разделяем на обучающую и тестовую выборки
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Обучаем модель
+        model = RandomForestRegressor(n_estimators=100).fit(X_train, y_train)
+
+        self.logger.debug(f"    Model score: {model.score(X_test, y_test)}")
+        self.logger.debug(f"    Model feature importances: {model.feature_importances_}")
+        self.logger.debug(f"    Model parameters: {model.get_params()}")
+        self.logger.debug(f"    Model estimators: {model.estimators_}")
+
+        # Предсказываем уровень глюкозы для каждого часа вперед
+        future_glucose = current_glucose
+        for hour in range(1, hours_ahead + 1):
+            future_timestamp = timestamps[-1] + hour * 3600 * 1000
+            future_iob = self.total_IOB_for_period(datetime.utcfromtimestamp(future_timestamp / 1000),
+                                                   self.calculate_dia())
+            prediction = model.predict([[future_timestamp, future_iob, isf]])
+            future_glucose += prediction[0] - current_glucose  # учитываем изменение
+
+        return future_glucose
+
+
+    def test_prediction(self, prediction_function, test_size=0.2):
+        # Разделить данные на обучающую и тестовую выборки
+        total_data_points = len(self.entries)
+        split_index = int((1 - test_size) * total_data_points)
+
+        train_entries = self.entries[:split_index]
+        test_entries = self.entries[split_index:]
+
+        # Сохранить оригинальные данные и установить обучающую выборку
+        original_entries = self.entries
+        self.entries = train_entries
+
+        # Тестировать каждую точку в тестовой выборке
+        errors = []
+        for idx, entry in enumerate(test_entries[:-1]):
+            # Используем функцию предсказания для получения предсказанного значения уровня глюкозы
+            predicted_glucose = prediction_function(hours_ahead=1)
+            real_glucose = test_entries[idx + 1]['sgv']
+            error = abs(predicted_glucose - real_glucose)
+            errors.append(error)
+
+            # Добавляем текущую точку в обучающие данные для следующего шага
+            self.entries.append(entry)
+
+        # Восстановить оригинальные данные
+        self.entries = original_entries
+
+        # Вернуть среднюю ошибку
+        mean_error = sum(errors) / len(errors)
+        return mean_error
+
 
 def get_start_end_time(period=None):
     def get_period_days(period):
@@ -161,29 +235,61 @@ if __name__ == "__main__":
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-    TOKEN = None
-    PERIOD = '1 month'
-    COUNT = 100000
-    analyzer = NightscoutAnalyzer("https://twentythousandphantoms.my.nightscoutpro.com", TOKEN)
-    start_time, end_time = get_start_end_time(PERIOD)
-    analyzer.fetch_data(start_time=start_time, end_time=end_time, count=COUNT)
-    isf = analyzer.analyze_data()
-    logger.info(f"Calculated ISF: {isf}")
+    config = {
+        "NS_URL": "https://twentythousandphantoms.my.nightscoutpro.com",
+        # "NS_URL": "https://openapssg.herokuapp.com",
+        # "NS_URL": "https://geekygirl-nightscout.herokuapp.com",
+        "TOKEN": None,
+        "PERIOD": '1 month',
+        "COUNT": 100000,
+        "HOUR_TO_PREDICT": 5,
+        "TEST_SIZE": 0.2,
+    }
 
+    analyzer = NightscoutAnalyzer(config['NS_URL'], config['TOKEN'])
+    start_time, end_time = get_start_end_time(config['PERIOD'])
+    exit(1) if not analyzer.fetch_data(start_time=start_time, end_time=end_time, count=config['COUNT']) else None
+    isf = analyzer.analyze_data()
+
+    logger.info(f"Hours to predict: {config['HOUR_TO_PREDICT']}")
+    logger.info(f"")
+    logger.info(f"Calculated ISF (Insulin Sensitivity Factor) [default:{analyzer.default_isf}]: {round(isf)} mg/dl/U ({round(isf / 18, 1)} mmol/l/U)")
+    logger.info(f"DIA (Duration of Insulin Action): {analyzer.calculate_dia()} hours")
+    logger.info(f"IOB (Insulin on Board): {round(analyzer.total_IOB_for_period(datetime.utcnow(), analyzer.calculate_dia()), 2)} U")
+    logger.info(f"")
     current_human_readable_time = (datetime.utcnow() + timedelta(hours=3)).strftime("%H:%M")
-    logger.info("Current time: " + current_human_readable_time)
+    # logger.info("Current time: " + current_human_readable_time)
     logger.info(f"Current glucose level: {analyzer.entries[-1]['sgv']} mg/dl, ({round(analyzer.entries[-1]['sgv'] / 18, 1)} mmol/l)")
-    logger.info(f"Total IOB for the last {analyzer.calculate_dia()} hours: {round(analyzer.total_IOB_for_period(datetime.utcnow(), analyzer.calculate_dia()), 2)}")
     logger.info("")
 
-    # timezone: Istanbul
-    for hours in [1, 2, 3, 4]:
+    logger.info("Predictions based on ISF and IOB:")
+    for hours in (range(1, config['HOUR_TO_PREDICT'] + 1)):
         predicted_glucose = analyzer.predict_glucose(hours_ahead=hours)
 
-        # logger.info(f"Prediction at : {round(predicted_glucose)} mg/dl, ({round(predicted_glucose / 18, 1)} mmol/l)")
         # timezone: Istanbul
         predicted_human_readable_time = (datetime.utcnow() + timedelta(hours=3 + hours)).strftime("%H:%M")
-        logger.info(f"Prediction at {predicted_human_readable_time}: {round(predicted_glucose)} mg/dl, ({round(predicted_glucose / 18, 1)} mmol/l)")
-        logger.info("")
+        logger.info(f"Prediction at {predicted_human_readable_time}: {round(predicted_glucose)} mg/dl, ({round(predicted_glucose / 18, 1)} mmol/l) [IOB: {round(analyzer.total_IOB_for_period(datetime.utcnow() + timedelta(hours=hours), analyzer.calculate_dia()), 2)} U]")
 
+    logger.info("")
+    test_size = config['TEST_SIZE']
+    logger.info(f"Test predictions based on ISF and IOB [test size: {test_size * 100}% of data]:")
+    mean_error = analyzer.test_prediction(analyzer.predict_glucose, test_size=0.2)
+    logger.info(f"Mean error: {round(mean_error)} mg/dl ({round(mean_error/18,2)} mmol/l)")
+    logger.info("")
+
+    logger.info("Predictions based on ISF and IOB and ML:")
+    for hours in (range(1, config['HOUR_TO_PREDICT'] + 1)):
+        predicted_glucose = analyzer.combined_glucose_prediction(hours_ahead=hours)
+
+        # timezone: Istanbul
+        predicted_human_readable_time = (datetime.utcnow() + timedelta(hours=3 + hours)).strftime("%H:%M")
+        logger.info(f"Prediction at {predicted_human_readable_time}: {round(predicted_glucose)} mg/dl, ({round(predicted_glucose / 18, 1)} mmol/l) [IOB: {round(analyzer.total_IOB_for_period(datetime.utcnow() + timedelta(hours=hours), analyzer.calculate_dia()), 2)} U]")
+
+    logger.info("")
+    test_size = config['TEST_SIZE']
+    logger.info(f"Test predictions based on ISF and IOB and ML [test size: {test_size * 100}% of data]:")
+    mean_error = analyzer.test_prediction(analyzer.combined_glucose_prediction, test_size=0.2)
+    logger.info(f"Mean error: {round(mean_error)} mg/dl ({round(mean_error/18,2)} mmol/l)")
+
+    logger.info("")
     logger.info("Done.")

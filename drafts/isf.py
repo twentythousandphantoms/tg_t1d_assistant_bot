@@ -17,6 +17,7 @@ class NightscoutAnalyzer:
         self.treatments = []
         self.logger = logging.getLogger(self.__class__.__name__)
         self.headers = {}
+        self.default_isf = 18 * 4
         if self.token:
             self.headers["Authorization"] = f"Bearer {self.token}"
 
@@ -34,14 +35,17 @@ class NightscoutAnalyzer:
         params = {"count": count, "start": start_time, "end": end_time}
         self.entries = sorted(self._fetch_from_endpoint('entries', params), key=lambda x: x.get('date', ''))
         self.treatments = self._fetch_from_endpoint('treatments')
-        logger.info(f"Fetched {len(self.entries)} entries and {len(self.treatments)} treatments")
+        self.logger.info(f"Fetched {len(self.entries)} entries and {len(self.treatments)} treatments")
+        self.logger.info(f"Entries: {self.entries if len(self.entries) < 10 else self.entries[:10]}")
+        self.logger.info(f"Treatments: {self.treatments if len(self.treatments) < 10 else self.treatments[:10]}")
+        return False if not self.entries else True
 
     def analyze_data(self):
         """Calculate average ISF from correction periods."""
         correction_periods = [
             self._compute_isf(treatment)
             for treatment in self.treatments
-            if treatment.get('eventType') == 'Insulin' and not self._is_near_meal(treatment)
+            if treatment.get('eventType') == 'Correction Bolus' and not self._is_near_meal(treatment)
         ]
         # Remove None values
         correction_periods = [x for x in correction_periods if x is not None]
@@ -49,22 +53,41 @@ class NightscoutAnalyzer:
         average_isf = sum(correction_periods) / len(correction_periods) if correction_periods else None
         return average_isf
 
+    def _parse_date(self, date_str):
+        """Parse ISO formatted date string into datetime object."""
+        return datetime.strptime(date_str, '%Y-%m-%dT%H:%M:%S.%fZ').replace(tzinfo=timezone.utc)
+
     def _compute_isf(self, treatment):
-        """Compute ISF (Insulin Sensitivity Factor) for a given treatment."""
-        start_time = treatment.get('timestamp')
-        end_time = start_time + 4 * 3600
+        """Compute ISF (Insulin Sensitivity Factor) for a given treatment.
+        ISF is the amount of glucose points that 1 unit of insulin will reduce.
+        ISF = (start_glucose - end_glucose) / insulin
 
-        start_glucose = next((e['sgv'] for e in self.entries if e.get('timestamp') == start_time), None)
-        end_glucose = next((e['sgv'] for e in self.entries if e.get('timestamp') == end_time), None)
+        """
+        start_time = self._parse_date(treatment.get('created_at'))
+        end_time = start_time + timedelta(hours=4)
 
-        if start_glucose and end_glucose and treatment.get('insulin', 0) != 0:
+        start_glucose = next((e['sgv'] for e in self.entries if self._parse_date(e.get('dateString')) == start_time), None)
+        # If there is no entry for the start time, use the first entry after the start time
+        if not start_glucose:
+            start_glucose = next((e['sgv'] for e in self.entries if self._parse_date(e.get('dateString')) > start_time), None)
+        end_glucose = next((e['sgv'] for e in self.entries if self._parse_date(e.get('dateString')) == end_time), None)
+        # If there is no entry for the end time, use the first entry before the end time
+        if not end_glucose:
+            # entries sorted by dateString
+            sorted_entries = sorted(self.entries, key=lambda x: x.get('dateString', ''), reverse=True)
+            end_glucose = next((e['sgv'] for e in sorted_entries if self._parse_date(e.get('dateString')) < end_time), None)
+
+        if start_glucose and end_glucose and treatment.get('insulin', 0) not in [0, None]:
             return (start_glucose - end_glucose) / treatment.get('insulin')
         return None
 
     def _is_near_meal(self, treatment):
         """Check if the treatment is near a meal."""
+        treatment_time = self._parse_date(treatment.get('created_at'))
+        # Check if there is a meal bolus within 4 hours of the treatment
         return any(
-            t.get('eventType') == 'Meal Bolus' and abs(t.get('timestamp', 0) - treatment.get('timestamp', 0)) < 4 * 3600
+            t.get('eventType') == 'Meal Bolus' and abs(
+                (self._parse_date(t.get('created_at')) - treatment_time).total_seconds()) < 4 * 3600
             for t in self.treatments
         )
 
@@ -75,16 +98,14 @@ class NightscoutAnalyzer:
             return None
 
         # Получаем ISF (или значение по умолчанию, если ISF = None)
-        isf = self.analyze_data() or 4 * 18
+        isf = self.analyze_data() or self.default_isf
 
         future_glucose = current_glucose
 
         # Итеративно вычисляем уровень глюкозы для каждого часа вперед
         for hour in range(1, hours_ahead + 1):
             future_iob = self.total_IOB_for_period(datetime.utcnow() + timedelta(hours=hour), self.calculate_dia())
-            logger.info(f"    IOB in {hour} hour(s): {round(future_iob, 2)}")
             glucose_change_due_to_insulin = future_iob * isf
-            logger.info(f"    Glucose change due to insulin in {hour} hour(s): {round(glucose_change_due_to_insulin)} mg/dL, {round(glucose_change_due_to_insulin / 18, 1)} mmol/L")
             future_glucose -= glucose_change_due_to_insulin  # вычитаем, так как инсулин снижает уровень глюкозы
 
         return future_glucose
